@@ -12,17 +12,25 @@ def call_appscript(action, data=None):
         payload.update(data)
     
     with httpx.Client(timeout=30.0) as client:
-        response = client.post(APPSSCRIPT_URL, json=payload)
-        print(f"AppScript status: {response.status_code}")
-        print(f"AppScript response: {response.text}")  # ← tambah ini
+        # Pertama, ambil URL redirect-nya
+        response = client.post(APPSSCRIPT_URL, json=payload, follow_redirects=False)
+        
+        # Kalau redirect, POST ulang ke URL tujuan
+        if response.status_code in (301, 302, 303, 307, 308):
+            redirect_url = response.headers.get('location')
+            print(f"Redirected to: {redirect_url}")
+            response = client.post(redirect_url, json=payload)
+        
+        print(f"Final status: {response.status_code}")
+        print(f"Final response: {response.text}")
         
         if not response.text.strip():
-            return {"success": False, "message": "Response kosong dari AppScript"}
+            return {"success": False, "message": "Response kosong"}
         
         try:
             return response.json()
         except Exception:
-            return {"success": False, "message": f"Response bukan JSON: {response.text[:200]}"}
+            return {"success": False, "message": f"Bukan JSON: {response.text[:200]}"}
 
 def handle_command(text, chat_id):
     try:
