@@ -4,7 +4,7 @@ import os
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-APPSSCRIPT_URL = os.getenv("APPSSCRIPT_URL")  # URL dari AppScript
+APPSSCRIPT_URL = os.getenv("APPSSCRIPT_URL")
 
 def call_appscript(action, data=None):
     payload = {"action": action}
@@ -13,80 +13,53 @@ def call_appscript(action, data=None):
     
     with httpx.Client(timeout=30.0) as client:
         url = APPSSCRIPT_URL
-        
-        # Loop maksimal 5 redirect, selalu pakai POST
         for _ in range(5):
             response = client.post(url, json=payload, follow_redirects=False)
-            print(f"Status: {response.status_code}, URL: {url}")
-            
             if response.status_code in (301, 302, 303, 307, 308):
                 url = response.headers.get('location')
-                print(f"Redirect ke: {url}")
                 continue
-            
-            # Sudah dapat response final
-            print(f"Response: {response.text[:300]}")
             break
-        
-        if not response.text.strip():
-            return {"success": False, "message": "Response kosong"}
         
         try:
             return response.json()
         except Exception:
-            return {"success": False, "message": f"Bukan JSON: {response.text[:200]}"}
-            
+            return {"success": False}
+
 def handle_command(text, chat_id):
     try:
         if text.startswith('/tambah'):
             parts = text.replace('/tambah', '').strip().split('|')
             if len(parts) >= 3:
-                result = call_appscript('tambah', {
+                call_appscript('tambah', {  # ← tidak perlu cek response, AppScript yg kirim notif
                     'judul': parts[0].strip(),
                     'tgl': parts[1].strip(),
                     'jam': parts[2].strip(),
                     'shift': parts[3].strip() if len(parts) > 3 else ""
                 })
-                return result.get('message', 'Error')
+                return None  # ← AppScript sudah kirim pesan ke Telegram
             return "Format: /tambah Judul | YYYY-MM-DD | HH:MM"
         
         elif text == '/list':
-            result = call_appscript('list')
-            if result.get('success') and result.get('agenda'):
-                agenda_list = result['agenda']
-                if agenda_list:
-                    pesan = "📋 AGENDA:\n"
-                    for a in agenda_list[:10]:
-                        pesan += f"{a['id']}. {a['judul']} - {a['tgl']} jam {a['jam']}\n"
-                    return pesan
-                return "✅ Tidak ada agenda"
-            return "Error mengambil data"
+            call_appscript('list')  # ← AppScript langsung kirim list ke Telegram
+            return None
         
         elif text.startswith('/hapus'):
             parts = text.split()
             if len(parts) > 1:
-                result = call_appscript('hapus', {'id': int(parts[1])})
-                return result.get('message', 'Error')
+                call_appscript('hapus', {'id': int(parts[1])})  # ← sama
+                return None
             return "Format: /hapus <id>"
         
-        return "Gunakan: /tambah, /list, /hapus"
+        return "Gunakan: /tambah Judul | YYYY-MM-DD | HH:MM\n/list\n/hapus <id>"
     
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
-def proses_pengingat():
-    """Dipanggil cron job setiap menit"""
-    result = call_appscript('pengingat')
-    if result.get('success') and result.get('notifikasi'):
-        for notif in result['notifikasi']:
-            kirim_notif_sync(notif)
-
-def kirim_notif_sync(pesan):
+def kirim_pesan(chat_id, teks):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     with httpx.Client() as client:
-        client.post(url, json={'chat_id': CHAT_ID, 'text': pesan})
+        client.post(url, json={'chat_id': chat_id, 'text': teks})
 
-# WSGI app (sama persis seperti sebelumnya)
 def app(environ, start_response):
     try:
         method = environ.get('REQUEST_METHOD', 'GET')
@@ -96,21 +69,21 @@ def app(environ, start_response):
             if isinstance(raw_body, bytes):
                 raw_body = raw_body.decode('utf-8')
             body = json.loads(raw_body)
-            
+
             if 'message' in body:
                 chat_id = body['message']['chat']['id']
                 text = body['message'].get('text', '')
                 if text:
                     response_text = handle_command(text, chat_id)
-                    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-                    with httpx.Client() as client:
-                        client.post(url, json={'chat_id': chat_id, 'text': response_text})
+                    if response_text:  # ← hanya kirim kalau ada pesan (error/format salah)
+                        kirim_pesan(chat_id, response_text)
+
             elif body.get('cron') == 'reminder':
-                proses_pengingat()
-        
+                call_appscript('pengingat')  # ← AppScript yg kirim notif pengingat
+
         start_response('200 OK', [('Content-Type', 'text/plain')])
         return [b'OK']
-    
+
     except Exception as e:
         print(f"Handler error: {e}")
         start_response('500 Internal Server Error', [('Content-Type', 'text/plain')])
