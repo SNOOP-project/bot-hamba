@@ -1,6 +1,5 @@
 import json
 import httpx
-import asyncio
 from datetime import datetime
 import sqlite3
 import os
@@ -28,7 +27,6 @@ def init_db():
 
 
 def kirim_notif_sync(pesan):
-    """Kirim notifikasi ke Telegram via HTTP langsung (synchronous)."""
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     with httpx.Client() as client:
         client.post(url, json={'chat_id': CHAT_ID, 'text': pesan})
@@ -52,17 +50,14 @@ def proses_pengingat():
                 kirim_notif_sync(f"⏰ Pengingat H-1\n📌 {judul}\n📅 {tgl_str} pukul {jam_str}")
                 c.execute("UPDATE agenda SET sudah_dikirim_h1=1 WHERE id=?", (id_agenda,))
                 conn.commit()
-
             elif 1.9 <= selisih < 2.1 and not dua_jam:
                 kirim_notif_sync(f"⏰ Pengingat 2 Jam Lagi\n📌 {judul}\n📅 {tgl_str} pukul {jam_str}")
                 c.execute("UPDATE agenda SET sudah_dikirim_2jam=1 WHERE id=?", (id_agenda,))
                 conn.commit()
-
             elif 0.9 <= selisih < 1.1 and not satu_jam:
                 kirim_notif_sync(f"⏰ Pengingat 1 Jam Lagi\n📌 {judul}\n📅 {tgl_str} pukul {jam_str}")
                 c.execute("UPDATE agenda SET sudah_dikirim_1jam=1 WHERE id=?", (id_agenda,))
                 conn.commit()
-
         except Exception as e:
             print(f"Error proses agenda {id_agenda}: {e}")
 
@@ -109,34 +104,30 @@ def handle_command(text, chat_id):
 
     except Exception as e:
         result = f"❌ Error: {str(e)}"
-
     finally:
         conn.close()
 
     return result
 
 
-def handler(request):
+# Vercel memanggil fungsi bernama `app`
+def app(request):
     try:
-        # Parse body — bisa bytes atau string tergantung Vercel runtime
         raw_body = request.body
         if isinstance(raw_body, bytes):
             raw_body = raw_body.decode('utf-8')
         body = json.loads(raw_body)
 
         if request.method == 'POST':
-            # Handle webhook dari Telegram
             if 'message' in body:
                 chat_id = body['message']['chat']['id']
                 text = body['message'].get('text', '')
-
                 if text:
                     response_text = handle_command(text, chat_id)
                     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
                     with httpx.Client() as client:
                         client.post(url, json={'chat_id': chat_id, 'text': response_text})
 
-            # Handle cron job (pengingat)
             elif body.get('cron') == 'reminder':
                 proses_pengingat()
 
