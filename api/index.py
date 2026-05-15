@@ -7,14 +7,22 @@ CHAT_ID = os.getenv("CHAT_ID")
 APPSSCRIPT_URL = os.getenv("APPSSCRIPT_URL")  # URL dari AppScript
 
 def call_appscript(action, data=None):
-    """Panggil Google AppScript"""
     payload = {"action": action}
     if data:
         payload.update(data)
     
     with httpx.Client(timeout=30.0) as client:
         response = client.post(APPSSCRIPT_URL, json=payload)
-        return response.json()
+        print(f"AppScript status: {response.status_code}")
+        print(f"AppScript response: {response.text}")  # ← tambah ini
+        
+        if not response.text.strip():
+            return {"success": False, "message": "Response kosong dari AppScript"}
+        
+        try:
+            return response.json()
+        except Exception:
+            return {"success": False, "message": f"Response bukan JSON: {response.text[:200]}"}
 
 def handle_command(text, chat_id):
     try:
