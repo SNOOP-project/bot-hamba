@@ -1,13 +1,15 @@
 import json
-from datetime import datetime
-import sqlite3
+import requests
 import os
-from telegram import Bot, Update
+import sqlite3
+from datetime import datetime
+from telegram import Bot
+from telegram.ext import Application
 
-# Konfigurasi
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+# Inisialisasi DB (pakai /tmp karena Vercel read-only selain /tmp)
 def init_db():
     conn = sqlite3.connect('/tmp/agenda.db')
     c = conn.cursor()
@@ -16,65 +18,42 @@ def init_db():
                   judul TEXT, 
                   tgl TEXT, 
                   jam TEXT, 
-                  shift TEXT, 
                   sudah_dikirim_h1 INTEGER DEFAULT 0,
                   sudah_dikirim_2jam INTEGER DEFAULT 0,
                   sudah_dikirim_1jam INTEGER DEFAULT 0)''')
     conn.commit()
     return conn
 
-async def kirim_notif(pesan):
-    bot = Bot(token=TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text=pesan)
-
-def proses_pengingat():
-    conn = init_db()
-    c = conn.cursor()
-    sekarang = datetime.now()
-    
-    c.execute("SELECT id, judul, tgl, jam, sudah_dikirim_h1, sudah_dikirim_2jam, sudah_dikirim_1jam FROM agenda")
-    agendas = c.fetchall()
-    
-    for agenda in agendas:
-        id_agenda, judul, tgl_str, jam_str, h1, dua_jam, satu_jam = agenda
-        try:
-            waktu_acara = datetime.strptime(f"{tgl_str} {jam_str}", "%Y-%m-%d %H:%M")
-            selisih = (waktu_acara - sekarang).total_seconds() / 3600
-            
-            if 23 <= selisih < 24 and not h1:
-                # Kirim notif async (simplifikasi)
-                c.execute("UPDATE agenda SET sudah_dikirim_h1=1 WHERE id=?", (id_agenda,))
-                conn.commit()
-            elif 1.9 <= selisih < 2.1 and not dua_jam:
-                c.execute("UPDATE agenda SET sudah_dikirim_2jam=1 WHERE id=?", (id_agenda,))
-                conn.commit()
-            elif 0.9 <= selisih < 1.1 and not satu_jam:
-                c.execute("UPDATE agenda SET sudah_dikirim_1jam=1 WHERE id=?", (id_agenda,))
-                conn.commit()
-        except:
-            pass
-    conn.close()
-
 def handle_command(text, chat_id):
     conn = init_db()
     c = conn.cursor()
     
-    if text.startswith('/tambah'):
-        parts = text.replace('/tambah', '').strip().split('|')
-        if len(parts) >= 3:
-            judul = parts[0].strip()
-            tgl = parts[1].strip()
-            jam = parts[2].strip()
-            c.execute("INSERT INTO agenda (judul, tgl, jam) VALUES (?,?,?)", 
-                      (judul, tgl, jam))
-            conn.commit()
-            return f"✅ Agenda '{judul}' tgl {tgl} jam {jam} ditambahkan!"
+    if text == '/start':
+        return "Halo! Saya bot pengingat residen neurologi.\n\nPerintah:\n/tambah Judul | YYYY-MM-DD | HH:MM\n/list\n/hapus <id>"
     
-    elif text.startswith('/list'):
-        c.execute("SELECT id, judul, tgl, jam FROM agenda WHERE tgl >= date('now') ORDER BY tgl, jam")
+    elif text.startswith('/tambah'):
+        try:
+            parts = text.replace('/tambah', '').strip().split('|')
+            if len(parts) >= 3:
+                judul = parts[0].strip()
+                tgl = parts[1].strip()
+                jam = parts[2].strip()
+                c.execute("INSERT INTO agenda (judul, tgl, jam) VALUES (?,?,?)", 
+                          (judul, tgl, jam))
+                conn.commit()
+                return f"✅ Agenda '{judul}' tgl {tgl} jam {jam} ditambahkan!"
+            return "Format salah. Contoh: /tambah Ujian | 2026-05-20 | 13:00"
+        except Exception as e:
+            return f"Error: {e}"
+    
+    elif text == '/list':
+        c.execute("SELECT id, judul, tgl, jam FROM agenda WHERE tgl >= date('now') ORDER BY tgl, jam LIMIT 10")
         agendas = c.fetchall()
         if agendas:
-            return "📋 AGENDA:\n" + "\n".join([f"{id}. {j} - {t} jam {jm}" for id, j, t, jm in agendas])
+            hasil = "📋 AGENDA:\n"
+            for id, judul, tgl, jam in agendas:
+                hasil += f"{id}. {judul} - {tgl} jam {jam}\n"
+            return hasil
         return "✅ Tidak ada agenda"
     
     elif text.startswith('/hapus'):
@@ -83,27 +62,36 @@ def handle_command(text, chat_id):
             c.execute("DELETE FROM agenda WHERE id=?", (parts[1],))
             conn.commit()
             return f"✅ Agenda ID {parts[1]} dihapus"
+        return "Format: /hapus <id>"
     
     conn.close()
-    return "Gunakan: /tambah Judul | YYYY-MM-DD | HH:MM\n/list\n/hapus <id>"
+    return "Perintah tidak dikenal. Gunakan: /tambah, /list, /hapus"
 
-def handler(request):
+def handler(request, context):
+    """Entry point Vercel"""
+    
+    # Handle POST dari Telegram
     if request.method == 'POST':
         body = json.loads(request.body)
         
-        # Handle webhook dari Telegram
+        # Pesan dari user
         if 'message' in body:
             chat_id = body['message']['chat']['id']
             text = body['message'].get('text', '')
+            
             response = handle_command(text, chat_id)
             
-            # Kirim response via Telegram API
-            import requests
+            # Kirim balasan ke Telegram
             url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
             requests.post(url, json={'chat_id': chat_id, 'text': response})
         
-        # Handle cron job (pengingat)
-        elif body.get('cron') == 'reminder':
-            proses_pengingat()
+        # Handle cron job untuk pengingat (nanti)
+        elif body.get('type') == 'reminder':
+            # Proses pengingat otomatis
+            pass
     
-    return {'statusCode': 200, 'body': 'OK'}
+    return {
+        'statusCode': 200,
+        'headers': {'Content-Type': 'application/json'},
+        'body': json.dumps({'ok': True})
+    }
