@@ -1,7 +1,8 @@
 import json
 import httpx
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -10,32 +11,94 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+
+# ============ HELPER ============
+
+def parse_tanggal(teks):
+    t = teks.lower()
+    sekarang = datetime.now()
+
+    if 'besok' in t:
+        return (sekarang + timedelta(days=1)).strftime("%Y-%m-%d")
+    if 'lusa' in t:
+        return (sekarang + timedelta(days=2)).strftime("%Y-%m-%d")
+    if any(k in t for k in ['hari ini', 'sekarang', 'today']):
+        return sekarang.strftime("%Y-%m-%d")
+    if 'minggu depan' in t:
+        return (sekarang + timedelta(days=7)).strftime("%Y-%m-%d")
+
+    match = re.search(r'(?:tanggal|tgl)\s+(\d{1,2})', t)
+    if match:
+        tgl = int(match.group(1))
+        bulan = sekarang.month
+        tahun = sekarang.year
+        if tgl < sekarang.day:
+            bulan += 1
+            if bulan > 12:
+                bulan = 1
+                tahun += 1
+        return f"{tahun}-{bulan:02d}-{tgl:02d}"
+
+    return None
+
+
+def deteksi_intent_lokal(text):
+    t = text.lower()
+
+    # ── LIST HARI INI ──
+    kata_hari_ini = ['hari ini', 'sekarang', 'today', 'saat ini']
+    kata_list = ['agenda', 'jadwal', 'tampil', 'tunjuk', 'lihat', 'cek', 'ada apa', 'apa aja', 'apaan', 'list']
+    if any(k in t for k in kata_hari_ini) and any(k in t for k in kata_list) and 'tambah' not in t and 'hapus' not in t:
+        return {"action": "list_hari_ini"}
+
+    # ── LIST BESOK ──
+    if 'besok' in t and any(k in t for k in kata_list) and 'tambah' not in t and 'hapus' not in t:
+        return {"action": "list_besok"}
+
+    # ── LIST SEMUA ──
+    if any(k in t for k in kata_list) and 'tambah' not in t and 'hapus' not in t:
+        return {"action": "list"}
+
+    # ── HAPUS by ID ──
+    if re.search(r'hapus|delete', t):
+        id_match = re.search(r'(?:nomor|no|id|agenda)?\s*(\d+)', t)
+        if id_match:
+            return {"action": "hapus", "id": int(id_match.group(1))}
+
+        # ── HAPUS by nama + tanggal ──
+        tgl = parse_tanggal(t)
+        if tgl:
+            nama_match = re.search(r'(?:hapus\s+)?(?:agenda\s+)?(.+?)\s+(?:tanggal|tgl|besok|lusa|hari ini)', t)
+            if nama_match:
+                judul = nama_match.group(1).strip()
+                return {"action": "cari_hapus", "judul": judul, "tgl": tgl}
+
+    return None  # → Groq
+
+
+# ============ GROQ ============
+
 def tanya_groq(pesan_user):
     sekarang = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     system_prompt = f"""Kamu adalah asisten jadwal pribadi. Tanggal dan waktu sekarang: {sekarang}.
-
 Tugasmu: pahami pesan user dan return HANYA JSON, tidak ada teks lain.
 
-Format JSON yang harus dikembalikan:
+Format JSON:
 {{
-  "action": "tambah" | "list" | "hapus" | "tidak_dikenal",
-  "judul": "nama agenda (hanya untuk action tambah)",
-  "tgl": "YYYY-MM-DD (hanya untuk action tambah, hitung dari tanggal sekarang)",
-  "jam": "HH:MM (hanya untuk action tambah, format 24 jam)",
-  "shift": "pagi/siang/malam (opsional, hanya jika user sebut shift)",
-  "id": 123,
-  "pesan": "respon natural jika tidak_dikenal"
+  "action": "tambah" | "tidak_dikenal",
+  "judul": "nama agenda",
+  "tgl": "YYYY-MM-DD",
+  "jam": "HH:MM",
+  "shift": "pagi/siang/malam (opsional)",
+  "pesan": "respon jika tidak_dikenal"
 }}
 
 Aturan:
-- "besok" = tanggal sekarang + 1 hari
-- "lusa" = tanggal sekarang + 2 hari
-- "minggu depan" = tanggal sekarang + 7 hari
+- "besok" = +1 hari, "lusa" = +2 hari, "minggu depan" = +7 hari
 - "sore" = 15:00, "pagi" = 09:00, "malam" = 19:00, "siang" = 12:00, "subuh" = 05:00
-- Jika jam tidak disebutkan, gunakan 09:00
-- Untuk list: apapun bermakna "lihat/tampilkan/cek agenda" -> action list
-- Untuk hapus: butuh id dari user"""
+- Jika jam tidak disebut, gunakan 09:00
+- Jika tidak jelas action-nya, gunakan tidak_dikenal"""
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -49,7 +112,7 @@ Aturan:
             {"role": "user", "content": pesan_user}
         ],
         "temperature": 0.1,
-        "max_tokens": 300
+        "max_tokens": 200
     }
 
     with httpx.Client(timeout=30.0) as client:
@@ -57,7 +120,6 @@ Aturan:
         result = response.json()
         raw = result["choices"][0]["message"]["content"].strip()
 
-        # Bersihkan markdown code block jika ada
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -66,6 +128,8 @@ Aturan:
 
         return json.loads(raw)
 
+
+# ============ APPSCRIPT ============
 
 def call_appscript(action, data=None):
     payload = {"action": action}
@@ -87,22 +151,43 @@ def call_appscript(action, data=None):
             return {"success": False}
 
 
+# ============ TELEGRAM ============
+
 def kirim_pesan(chat_id, teks):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     with httpx.Client() as client:
         client.post(url, json={'chat_id': chat_id, 'text': teks})
 
 
+# ============ HANDLER ============
+
 def handle_message(text, chat_id):
     try:
-        perintah = tanya_groq(text)
-        action = perintah.get("action")
+        # Coba deteksi lokal dulu (0 token)
+        intent = deteksi_intent_lokal(text)
 
-        if action == "tambah":
-            judul = perintah.get("judul", "")
-            tgl = perintah.get("tgl", "")
-            jam = perintah.get("jam", "09:00")
-            shift = perintah.get("shift", "")
+        if intent is None:
+            # Baru panggil Groq kalau tidak terdeteksi
+            intent = tanya_groq(text)
+
+        action = intent.get("action")
+
+        if action == "list":
+            call_appscript("list")
+
+        elif action == "list_hari_ini":
+            sekarang = datetime.now().strftime("%Y-%m-%d")
+            call_appscript("list_filter", {"tgl": sekarang})
+
+        elif action == "list_besok":
+            besok = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            call_appscript("list_filter", {"tgl": besok})
+
+        elif action == "tambah":
+            judul = intent.get("judul", "")
+            tgl = intent.get("tgl", "")
+            jam = intent.get("jam", "09:00")
+            shift = intent.get("shift", "")
 
             if not judul or not tgl:
                 kirim_pesan(chat_id, "⚠️ Maaf, sebutkan nama agenda dan tanggalnya ya.")
@@ -115,18 +200,21 @@ def handle_message(text, chat_id):
                 "shift": shift
             })
 
-        elif action == "list":
-            call_appscript("list")
-
         elif action == "hapus":
-            id_agenda = perintah.get("id")
+            id_agenda = intent.get("id")
             if not id_agenda:
-                kirim_pesan(chat_id, "⚠️ Sebutkan nomor agenda yang mau dihapus. Ketik 'agenda apa aja' dulu untuk lihat nomornya.")
+                kirim_pesan(chat_id, "⚠️ Sebutkan nomor agenda yang mau dihapus.\nKetik 'lihat agenda' dulu untuk lihat nomornya.")
                 return
             call_appscript("hapus", {"id": int(id_agenda)})
 
+        elif action == "cari_hapus":
+            call_appscript("cari_hapus", {
+                "judul": intent.get("judul"),
+                "tgl": intent.get("tgl")
+            })
+
         elif action == "tidak_dikenal":
-            pesan = perintah.get("pesan", "Maaf, saya tidak mengerti. Coba minta saya tambah, lihat, atau hapus agenda.")
+            pesan = intent.get("pesan", "Maaf, saya tidak mengerti.\n\nCoba:\n- \"tambah rapat besok jam 2 siang\"\n- \"agenda hari ini\"\n- \"hapus nomor 3\"")
             kirim_pesan(chat_id, pesan)
 
         else:
@@ -136,6 +224,8 @@ def handle_message(text, chat_id):
         print(f"Error handle_message: {e}")
         kirim_pesan(chat_id, f"❌ Error: {str(e)}")
 
+
+# ============ WSGI ============
 
 def app(environ, start_response):
     try:
