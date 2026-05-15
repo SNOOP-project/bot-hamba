@@ -1,126 +1,82 @@
 import json
 import httpx
-from datetime import datetime
-import sqlite3
 import os
 
-# Konfigurasi
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+APPSCRIPT_URL = os.getenv("APPSSCRIPT_URL")  # URL dari AppScript
 
+def call_appscript(action, data=None):
+    """Panggil Google AppScript"""
+    payload = {"action": action}
+    if data:
+        payload.update(data)
+    
+    with httpx.Client(timeout=30.0) as client:
+        response = client.post(APPSSCRIPT_URL, json=payload)
+        return response.json()
 
-def init_db():
-    conn = sqlite3.connect('/tmp/agenda.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS agenda 
-                 (id INTEGER PRIMARY KEY, 
-                  judul TEXT, 
-                  tgl TEXT, 
-                  jam TEXT, 
-                  shift TEXT, 
-                  sudah_dikirim_h1 INTEGER DEFAULT 0,
-                  sudah_dikirim_2jam INTEGER DEFAULT 0,
-                  sudah_dikirim_1jam INTEGER DEFAULT 0)''')
-    conn.commit()
-    return conn
+def handle_command(text, chat_id):
+    try:
+        if text.startswith('/tambah'):
+            parts = text.replace('/tambah', '').strip().split('|')
+            if len(parts) >= 3:
+                result = call_appscript('tambah', {
+                    'judul': parts[0].strip(),
+                    'tgl': parts[1].strip(),
+                    'jam': parts[2].strip(),
+                    'shift': parts[3].strip() if len(parts) > 3 else ""
+                })
+                return result.get('message', 'Error')
+            return "Format: /tambah Judul | YYYY-MM-DD | HH:MM"
+        
+        elif text == '/list':
+            result = call_appscript('list')
+            if result.get('success') and result.get('agenda'):
+                agenda_list = result['agenda']
+                if agenda_list:
+                    pesan = "📋 AGENDA:\n"
+                    for a in agenda_list[:10]:
+                        pesan += f"{a['id']}. {a['judul']} - {a['tgl']} jam {a['jam']}\n"
+                    return pesan
+                return "✅ Tidak ada agenda"
+            return "Error mengambil data"
+        
+        elif text.startswith('/hapus'):
+            parts = text.split()
+            if len(parts) > 1:
+                result = call_appscript('hapus', {'id': int(parts[1])})
+                return result.get('message', 'Error')
+            return "Format: /hapus <id>"
+        
+        return "Gunakan: /tambah, /list, /hapus"
+    
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
 
+def proses_pengingat():
+    """Dipanggil cron job setiap menit"""
+    result = call_appscript('pengingat')
+    if result.get('success') and result.get('notifikasi'):
+        for notif in result['notifikasi']:
+            kirim_notif_sync(notif)
 
 def kirim_notif_sync(pesan):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     with httpx.Client() as client:
         client.post(url, json={'chat_id': CHAT_ID, 'text': pesan})
 
-
-def proses_pengingat():
-    conn = init_db()
-    c = conn.cursor()
-    sekarang = datetime.now()
-
-    c.execute("SELECT id, judul, tgl, jam, sudah_dikirim_h1, sudah_dikirim_2jam, sudah_dikirim_1jam FROM agenda")
-    agendas = c.fetchall()
-
-    for agenda in agendas:
-        id_agenda, judul, tgl_str, jam_str, h1, dua_jam, satu_jam = agenda
-        try:
-            waktu_acara = datetime.strptime(f"{tgl_str} {jam_str}", "%Y-%m-%d %H:%M")
-            selisih = (waktu_acara - sekarang).total_seconds() / 3600
-
-            if 23 <= selisih < 24 and not h1:
-                kirim_notif_sync(f"⏰ Pengingat H-1\n📌 {judul}\n📅 {tgl_str} pukul {jam_str}")
-                c.execute("UPDATE agenda SET sudah_dikirim_h1=1 WHERE id=?", (id_agenda,))
-                conn.commit()
-            elif 1.9 <= selisih < 2.1 and not dua_jam:
-                kirim_notif_sync(f"⏰ Pengingat 2 Jam Lagi\n📌 {judul}\n📅 {tgl_str} pukul {jam_str}")
-                c.execute("UPDATE agenda SET sudah_dikirim_2jam=1 WHERE id=?", (id_agenda,))
-                conn.commit()
-            elif 0.9 <= selisih < 1.1 and not satu_jam:
-                kirim_notif_sync(f"⏰ Pengingat 1 Jam Lagi\n📌 {judul}\n📅 {tgl_str} pukul {jam_str}")
-                c.execute("UPDATE agenda SET sudah_dikirim_1jam=1 WHERE id=?", (id_agenda,))
-                conn.commit()
-        except Exception as e:
-            print(f"Error proses agenda {id_agenda}: {e}")
-
-    conn.close()
-
-
-def handle_command(text, chat_id):
-    conn = init_db()
-    c = conn.cursor()
-    result = "Gunakan:\n/tambah Judul | YYYY-MM-DD | HH:MM\n/list\n/hapus <id>"
-
-    try:
-        if text.startswith('/tambah'):
-            parts = text.replace('/tambah', '').strip().split('|')
-            if len(parts) >= 3:
-                judul = parts[0].strip()
-                tgl = parts[1].strip()
-                jam = parts[2].strip()
-                c.execute("INSERT INTO agenda (judul, tgl, jam) VALUES (?,?,?)",
-                          (judul, tgl, jam))
-                conn.commit()
-                result = f"✅ Agenda '{judul}' tgl {tgl} jam {jam} ditambahkan!"
-            else:
-                result = "Format: /tambah Judul | YYYY-MM-DD | HH:MM"
-
-        elif text.startswith('/list'):
-            c.execute("SELECT id, judul, tgl, jam FROM agenda WHERE tgl >= date('now') ORDER BY tgl, jam")
-            agendas = c.fetchall()
-            if agendas:
-                result = "📋 AGENDA:\n" + "\n".join(
-                    [f"{row[0]}. {row[1]} - {row[2]} jam {row[3]}" for row in agendas]
-                )
-            else:
-                result = "✅ Tidak ada agenda"
-
-        elif text.startswith('/hapus'):
-            parts = text.split()
-            if len(parts) > 1:
-                c.execute("DELETE FROM agenda WHERE id=?", (parts[1],))
-                conn.commit()
-                result = f"✅ Agenda ID {parts[1]} dihapus"
-            else:
-                result = "Format: /hapus <id>"
-
-    except Exception as e:
-        result = f"❌ Error: {str(e)}"
-    finally:
-        conn.close()
-
-    return result
-
-
-# WSGI app — format standar yang dikenali Vercel
+# WSGI app (sama persis seperti sebelumnya)
 def app(environ, start_response):
     try:
         method = environ.get('REQUEST_METHOD', 'GET')
-
         if method == 'POST':
             content_length = int(environ.get('CONTENT_LENGTH', 0) or 0)
             raw_body = environ['wsgi.input'].read(content_length)
             if isinstance(raw_body, bytes):
                 raw_body = raw_body.decode('utf-8')
             body = json.loads(raw_body)
-
+            
             if 'message' in body:
                 chat_id = body['message']['chat']['id']
                 text = body['message'].get('text', '')
@@ -129,13 +85,12 @@ def app(environ, start_response):
                     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
                     with httpx.Client() as client:
                         client.post(url, json={'chat_id': chat_id, 'text': response_text})
-
             elif body.get('cron') == 'reminder':
                 proses_pengingat()
-
+        
         start_response('200 OK', [('Content-Type', 'text/plain')])
         return [b'OK']
-
+    
     except Exception as e:
         print(f"Handler error: {e}")
         start_response('500 Internal Server Error', [('Content-Type', 'text/plain')])
