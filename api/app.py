@@ -3,13 +3,10 @@ import requests
 import os
 import sqlite3
 from datetime import datetime
-from telegram import Bot
-from telegram.ext import Application
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Inisialisasi DB (pakai /tmp karena Vercel read-only selain /tmp)
 def init_db():
     conn = sqlite3.connect('/tmp/agenda.db')
     c = conn.cursor()
@@ -67,28 +64,18 @@ def handle_command(text, chat_id):
     conn.close()
     return "Perintah tidak dikenal. Gunakan: /tambah, /list, /hapus"
 
-def handler(request, context):
-    """Entry point Vercel"""
-    
-    # Handle POST dari Telegram
+# 🔥 INI YANG DIUBAH: handler → app
+def app(request, context):
     if request.method == 'POST':
         body = json.loads(request.body)
         
-        # Pesan dari user
         if 'message' in body:
             chat_id = body['message']['chat']['id']
             text = body['message'].get('text', '')
-            
             response = handle_command(text, chat_id)
             
-            # Kirim balasan ke Telegram
             url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
             requests.post(url, json={'chat_id': chat_id, 'text': response})
-        
-        # Handle cron job untuk pengingat (nanti)
-        elif body.get('type') == 'reminder':
-            # Proses pengingat otomatis
-            pass
     
     return {
         'statusCode': 200,
