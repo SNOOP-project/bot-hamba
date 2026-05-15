@@ -4,7 +4,7 @@ import os
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-APPSCRIPT_URL = os.getenv("APPSSCRIPT_URL")  # URL dari AppScript
+APPSSCRIPT_URL = os.getenv("APPSSCRIPT_URL")  # URL dari AppScript
 
 def call_appscript(action, data=None):
     """Panggil Google AppScript"""
