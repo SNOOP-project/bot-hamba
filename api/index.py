@@ -12,17 +12,21 @@ def call_appscript(action, data=None):
         payload.update(data)
     
     with httpx.Client(timeout=30.0) as client:
-        # Pertama, ambil URL redirect-nya
-        response = client.post(APPSSCRIPT_URL, json=payload, follow_redirects=False)
+        url = APPSSCRIPT_URL
         
-        # Kalau redirect, POST ulang ke URL tujuan
-        if response.status_code in (301, 302, 303, 307, 308):
-            redirect_url = response.headers.get('location')
-            print(f"Redirected to: {redirect_url}")
-            response = client.post(redirect_url, json=payload)
-        
-        print(f"Final status: {response.status_code}")
-        print(f"Final response: {response.text}")
+        # Loop maksimal 5 redirect, selalu pakai POST
+        for _ in range(5):
+            response = client.post(url, json=payload, follow_redirects=False)
+            print(f"Status: {response.status_code}, URL: {url}")
+            
+            if response.status_code in (301, 302, 303, 307, 308):
+                url = response.headers.get('location')
+                print(f"Redirect ke: {url}")
+                continue
+            
+            # Sudah dapat response final
+            print(f"Response: {response.text[:300]}")
+            break
         
         if not response.text.strip():
             return {"success": False, "message": "Response kosong"}
@@ -31,7 +35,7 @@ def call_appscript(action, data=None):
             return response.json()
         except Exception:
             return {"success": False, "message": f"Bukan JSON: {response.text[:200]}"}
-
+            
 def handle_command(text, chat_id):
     try:
         if text.startswith('/tambah'):
