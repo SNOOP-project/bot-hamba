@@ -11,15 +11,19 @@ def call_appscript(action, data=None):
     if data:
         payload.update(data)
     
+    print(f"Mengirim ke AppScript: {json.dumps(payload)}")  # ← tambah ini
+    
     with httpx.Client(timeout=30.0) as client:
         url = APPSSCRIPT_URL
         for _ in range(5):
             response = client.post(url, json=payload, follow_redirects=False)
+            print(f"Status: {response.status_code}")
             if response.status_code in (301, 302, 303, 307, 308):
                 url = response.headers.get('location')
                 continue
             break
         
+        print(f"Response: {response.text[:200]}")
         try:
             return response.json()
         except Exception:
