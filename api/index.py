@@ -3,7 +3,6 @@ import httpx
 from datetime import datetime
 import sqlite3
 import os
-from telegram import Bot
 
 # Konfigurasi
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -110,15 +109,18 @@ def handle_command(text, chat_id):
     return result
 
 
-# Vercel memanggil fungsi bernama `app`
-def app(request):
+# WSGI app — format standar yang dikenali Vercel
+def app(environ, start_response):
     try:
-        raw_body = request.body
-        if isinstance(raw_body, bytes):
-            raw_body = raw_body.decode('utf-8')
-        body = json.loads(raw_body)
+        method = environ.get('REQUEST_METHOD', 'GET')
 
-        if request.method == 'POST':
+        if method == 'POST':
+            content_length = int(environ.get('CONTENT_LENGTH', 0) or 0)
+            raw_body = environ['wsgi.input'].read(content_length)
+            if isinstance(raw_body, bytes):
+                raw_body = raw_body.decode('utf-8')
+            body = json.loads(raw_body)
+
             if 'message' in body:
                 chat_id = body['message']['chat']['id']
                 text = body['message'].get('text', '')
@@ -131,8 +133,10 @@ def app(request):
             elif body.get('cron') == 'reminder':
                 proses_pengingat()
 
+        start_response('200 OK', [('Content-Type', 'text/plain')])
+        return [b'OK']
+
     except Exception as e:
         print(f"Handler error: {e}")
-        return {'statusCode': 500, 'body': str(e)}
-
-    return {'statusCode': 200, 'body': 'OK'}
+        start_response('500 Internal Server Error', [('Content-Type', 'text/plain')])
+        return [str(e).encode()]
