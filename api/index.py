@@ -45,6 +45,25 @@ def parse_tanggal(teks):
 def deteksi_intent_lokal(text):
     t = text.lower()
 
+    # ── HAPUS harus dicek PERTAMA sebelum list ──
+    if re.search(r'hapus|delete', t):
+        id_match = re.search(r'(?:nomor|no|id)\s*(\d+)', t)
+        if id_match:
+            return {"action": "hapus", "id": int(id_match.group(1))}
+
+        tgl = parse_tanggal(t)
+        if tgl:
+            nama_match = re.search(r'hapus\s+(?:jadwal|agenda)?\s*(.+?)\s+(?:tanggal|tgl|besok|lusa|hari ini)', t)
+            if nama_match:
+                judul = nama_match.group(1).strip()
+                return {"action": "cari_hapus", "judul": judul, "tgl": tgl}
+
+        return None  # hapus tapi tidak jelas → Groq
+
+    # ── TAMBAH harus dicek sebelum list ──
+    if re.search(r'tambah|catat|masukin|input|buat', t):
+        return None  # serahkan ke Groq
+
     # ── JADWAL KOSONG ──
     if any(k in t for k in ['kosong', 'libur', 'ga ada jaga', 'tidak ada jaga', 'bebas', 'free']):
         sekarang = datetime.now()
@@ -66,32 +85,18 @@ def deteksi_intent_lokal(text):
         return {"action": "list_filter", "tgl": tgl_str}
 
     # ── LIST HARI INI ──
-    kata_hari_ini = ['hari ini', 'sekarang', 'today', 'saat ini']
+    kata_hari_ini = ['hari ini', 'sekarang', 'today']
     kata_list = ['agenda', 'jadwal', 'tampil', 'tunjuk', 'lihat', 'cek', 'ada apa', 'apa aja', 'apaan', 'list', 'jaga']
-    if any(k in t for k in kata_hari_ini) and any(k in t for k in kata_list) and 'tambah' not in t and 'hapus' not in t:
+    if any(k in t for k in kata_hari_ini) and any(k in t for k in kata_list):
         return {"action": "list_hari_ini"}
 
     # ── LIST BESOK ──
-    if 'besok' in t and any(k in t for k in kata_list) and 'tambah' not in t and 'hapus' not in t:
+    if 'besok' in t and any(k in t for k in kata_list):
         return {"action": "list_besok"}
 
     # ── LIST SEMUA ──
-    if any(k in t for k in kata_list) and 'tambah' not in t and 'hapus' not in t:
+    if any(k in t for k in kata_list):
         return {"action": "list"}
-
-    # ── HAPUS by ID ──
-    if re.search(r'hapus|delete', t):
-        id_match = re.search(r'(?:nomor|no|id|agenda)?\s*(\d+)', t)
-        if id_match:
-            return {"action": "hapus", "id": int(id_match.group(1))}
-
-        # ── HAPUS by nama + tanggal ──
-        tgl = parse_tanggal(t)
-        if tgl:
-            nama_match = re.search(r'(?:hapus\s+)?(?:agenda\s+)?(.+?)\s+(?:tanggal|tgl|besok|lusa|hari ini)', t)
-            if nama_match:
-                judul = nama_match.group(1).strip()
-                return {"action": "cari_hapus", "judul": judul, "tgl": tgl}
 
     return None  # → Groq
 
