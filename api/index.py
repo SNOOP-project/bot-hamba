@@ -45,9 +45,29 @@ def parse_tanggal(teks):
 def deteksi_intent_lokal(text):
     t = text.lower()
 
+    # ── JADWAL KOSONG ──
+    if any(k in t for k in ['kosong', 'libur', 'ga ada jaga', 'tidak ada jaga', 'bebas', 'free']):
+        sekarang = datetime.now()
+        return {"action": "jadwal_kosong", "bulan": sekarang.month, "tahun": sekarang.year}
+
+    # ── LIST TANGGAL TERTENTU ──
+    match_tgl = re.search(r'(?:tanggal|tgl)\s+(\d{1,2})', t)
+    if match_tgl and any(k in t for k in ['jaga', 'ada', 'agenda', 'jadwal', 'apa', 'gimana']):
+        tgl_num = int(match_tgl.group(1))
+        sekarang = datetime.now()
+        bulan = sekarang.month
+        tahun = sekarang.year
+        if tgl_num < sekarang.day:
+            bulan += 1
+            if bulan > 12:
+                bulan = 1
+                tahun += 1
+        tgl_str = f"{tahun}-{bulan:02d}-{tgl_num:02d}"
+        return {"action": "list_filter", "tgl": tgl_str}
+
     # ── LIST HARI INI ──
     kata_hari_ini = ['hari ini', 'sekarang', 'today', 'saat ini']
-    kata_list = ['agenda', 'jadwal', 'tampil', 'tunjuk', 'lihat', 'cek', 'ada apa', 'apa aja', 'apaan', 'list']
+    kata_list = ['agenda', 'jadwal', 'tampil', 'tunjuk', 'lihat', 'cek', 'ada apa', 'apa aja', 'apaan', 'list', 'jaga']
     if any(k in t for k in kata_hari_ini) and any(k in t for k in kata_list) and 'tambah' not in t and 'hapus' not in t:
         return {"action": "list_hari_ini"}
 
@@ -86,11 +106,13 @@ Tugasmu: pahami pesan user dan return HANYA JSON, tidak ada teks lain.
 
 Format JSON:
 {{
-  "action": "tambah" | "tidak_dikenal",
-  "judul": "nama agenda",
-  "tgl": "YYYY-MM-DD",
-  "jam": "HH:MM",
+  "action": "tambah" | "list_filter" | "jadwal_kosong" | "tidak_dikenal",
+  "judul": "nama agenda (untuk tambah)",
+  "tgl": "YYYY-MM-DD (untuk tambah dan list_filter)",
+  "jam": "HH:MM (untuk tambah, format 24 jam)",
   "shift": "pagi/siang/malam (opsional)",
+  "bulan": 5 (angka bulan, untuk jadwal_kosong),
+  "tahun": 2026 (untuk jadwal_kosong),
   "pesan": "respon jika tidak_dikenal"
 }}
 
@@ -98,7 +120,9 @@ Aturan:
 - "besok" = +1 hari, "lusa" = +2 hari, "minggu depan" = +7 hari
 - "sore" = 15:00, "pagi" = 09:00, "malam" = 19:00, "siang" = 12:00, "subuh" = 05:00
 - Jika jam tidak disebut, gunakan 09:00
-- Jika tidak jelas action-nya, gunakan tidak_dikenal"""
+- "tgl 24", "tanggal 24 bulan ini", "24 mei" + kata tanya → list_filter
+- "hari kosong", "jadwal kosong", "kapan libur" → jadwal_kosong
+- Jika tidak jelas → tidak_dikenal"""
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -163,11 +187,9 @@ def kirim_pesan(chat_id, teks):
 
 def handle_message(text, chat_id):
     try:
-        # Coba deteksi lokal dulu (0 token)
         intent = deteksi_intent_lokal(text)
 
         if intent is None:
-            # Baru panggil Groq kalau tidak terdeteksi
             intent = tanya_groq(text)
 
         action = intent.get("action")
@@ -176,12 +198,21 @@ def handle_message(text, chat_id):
             call_appscript("list")
 
         elif action == "list_hari_ini":
-            sekarang = datetime.now().strftime("%Y-%m-%d")
-            call_appscript("list_filter", {"tgl": sekarang})
+            tgl = datetime.now().strftime("%Y-%m-%d")
+            call_appscript("list_filter", {"tgl": tgl})
 
         elif action == "list_besok":
-            besok = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-            call_appscript("list_filter", {"tgl": besok})
+            tgl = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            call_appscript("list_filter", {"tgl": tgl})
+
+        elif action == "list_filter":
+            call_appscript("list_filter", {"tgl": intent.get("tgl")})
+
+        elif action == "jadwal_kosong":
+            call_appscript("jadwal_kosong", {
+                "bulan": intent.get("bulan", datetime.now().month),
+                "tahun": intent.get("tahun", datetime.now().year)
+            })
 
         elif action == "tambah":
             judul = intent.get("judul", "")
@@ -214,7 +245,7 @@ def handle_message(text, chat_id):
             })
 
         elif action == "tidak_dikenal":
-            pesan = intent.get("pesan", "Maaf, saya tidak mengerti.\n\nCoba:\n- \"tambah rapat besok jam 2 siang\"\n- \"agenda hari ini\"\n- \"hapus nomor 3\"")
+            pesan = intent.get("pesan", "Maaf, saya tidak mengerti.\n\nCoba:\n- \"tambah rapat besok jam 2 siang\"\n- \"agenda hari ini\"\n- \"jadwal kosong bulan ini\"\n- \"hapus nomor 3\"")
             kirim_pesan(chat_id, pesan)
 
         else:
